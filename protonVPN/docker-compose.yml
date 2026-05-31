@@ -1,14 +1,7 @@
-# ======================================================================================
-# COMMUNITY STACK: GLUETUN (PROTONVPN WITH NAT-PMP) + TRANSMISSION TORRENT CLIENT
-# ARCHITECTURE: Transmission shares Gluetun's network namespace (All traffic via VPN).
-# AUTOMATION: Dynamic port changes are caught by Gluetun and pushed to Transmission RPC.
-# ======================================================================================
-
 services:
   gluetun-proton:
     image: qmcgaw/gluetun:latest
     container_name: gluetun-proton
-    # NET_ADMIN capability is mandatory for Gluetun to manipulate routing tables and firewall rules
     cap_add:
       - NET_ADMIN
     restart: unless-stopped
@@ -16,49 +9,37 @@ services:
       - private_secured_network
 
     environment:
-      - TZ=UTC # Change to your timezone (e.g., Europe/Paris, America/New_York)
+      - TZ=Europe/Paris
       - VPN_SERVICE_PROVIDER=custom
       - VPN_TYPE=wireguard
       
-      # --- PROTONVPN NAT-PMP CONFIGURATION ---
-      # Tells Gluetun to request an open incoming peer port via NAT-PMP protocols
+      # Enable ProtonVPN Port Forwarding via NAT-PMP natively inside Gluetun
       - VPN_PORT_FORWARDING=on
       - VPN_PORT_FORWARDING_PROVIDER=protonvpn
       
-      # --- LOCAL FIREWALL BYPASS RULES ---
-      # Adjust to your local physical LAN layout to ensure you can access the web UI locally
+      # Local network access rule (adjust if your local subnet is different)
       - FIREWALL_OUTBOUND_SUBNETS=192.168.1.0/24
-      # Exposes Transmission's Web UI/RPC port inside Gluetun's firewall layer
       - FIREWALL_INPUT_PORTS=9091
 
-      # --- GLUETUN HEALTH CONTROL SERVER ---
+      # Gluetun internal control port
       - HTTP_CONTROL_SERVER=on
       - HTTP_CONTROL_SERVER_PORT=9999
 
-      # --- THE AUTOMATION HOOK (THE BRAINS) ---
-      # When the tunnel goes UP and Proton grants a port, this command fires instantly.
-      # 1. Installs 'transmission-remote' natively within Gluetun's lightweight Alpine base.
-      # 2. Uses template variable {{PORTS}} (Gluetun auto-substitutes this with the real port number).
-      # 3. Connects via localhost (since network namespaces are shared) to inject the peer port.
-      # 4. Forces an immediate reannounce on all active torrents to broadcast the open port to peers.
-      # NOTE: Ensure the '-n user:pass' arguments match the USER and PASS environment values below.
-      - VPN_PORT_FORWARDING_UP_COMMAND=/bin/sh -c "apk add --no-cache transmission-remote && transmission-remote localhost:9091 -n YOUR_RPC_USERNAME:YOUR_RPC_PASSWORD -p {{PORTS}} && transmission-remote localhost:9091 -n YOUR_RPC_USERNAME:YOUR_RPC_PASSWORD -t all --reannounce"
+      # AUTOMATION HOOK: Works identically on localhost since network namespaces are shared
+      - VPN_PORT_FORWARDING_UP_COMMAND=/bin/sh -c "sleep 10 && apk add --no-cache transmission-remote && transmission-remote localhost:9091 -n YOUR_RPC_USERNAME:YOUR_RPC_PASSWORD -p {{PORTS}} && transmission-remote localhost:9091 -n YOUR_RPC_USERNAME:YOUR_RPC_PASSWORD -t all --reannounce"
 
     volumes:
-      # Mount your custom ProtonVPN WireGuard config file (Ensure 'Port Forwarding' is checked in Proton Dashboard)
+      # Mount your ProtonVPN Wireguard config file directly to Gluetun
       - /path/to/your/apps/vpnProton/wg0.conf:/gluetun/wireguard/wg0.conf:ro
-      # Dynamic state storage for Gluetun container
       - gluetun-proton-state:/gluetun
 
-    # --- TRAEFIK REVERSE PROXY LABELS ---
-    # Routed directly off the gluetun container because Transmission shares its network interface.
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=private_secured_network"
-      # Change your entrypoints, resolvers, and domain hosts to fit your production infrastructure
-      - "traefik.http.routers.transmission-proton.rule=Host(`torrents.example.com`)"
+      # Isolated Traefik Router & Service names to prevent collision with your other stack
+      - "traefik.http.routers.transmission-proton.rule=Host(`your.domain.com`)"
       - "traefik.http.routers.transmission-proton.entrypoints=websecure"
-      - "traefik.http.routers.transmission-proton.tls.certresolver=yourresolver"
+      - "traefik.http.routers.transmission-proton.tls.certresolver=myresolver"
       - "traefik.http.services.transmission-proton.loadbalancer.server.port=9091"
 
     healthcheck:
@@ -73,45 +54,33 @@ services:
     container_name: transmission-proton
     restart: unless-stopped
 
-    # --- THE SECURE BUBBLE CRITICAL SETTING ---
-    # Tells Docker to place Transmission completely inside Gluetun's network space.
-    # It will have no independent IP, ensuring zero traffic can bypass the VPN tunnel.
+    # Route traffic through the newly renamed Gluetun service
     network_mode: "service:gluetun-proton"
 
-    # Keeps the container from executing until Gluetun verifies its tunnel health check is active
     depends_on:
       gluetun-proton:
         condition: service_healthy
 
     environment:
-      - PUID=1000 # Modify to your host user's UID to prevent file permission issues
-      - PGID=1000 # Modify to your host user's GID to prevent file permission issues
-      - TZ=UTC    # Match with your system timezone
-      - USER=YOUR_RPC_USERNAME # Secure login for WebUI/RPC (Must match Hook command above)
-      - PASS=YOUR_RPC_PASSWORD # Secure password for WebUI/RPC (Must match Hook command above)
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+      - USER=YOUR_RPC_USERNAME
+      - PASS=YOUR_RPC_PASSWORD
 
     volumes:
-      # Application runtime configuration data
+      # Centralized application configs under your target directory
       - /path/to/your/apps/vpnProton/transmission-config:/config
-      
-      # Persistent Storage Volumes (Map to your host infrastructure media folders)
+      # Your persistent download directories
       - /path/to/your/storage/downloads/completed:/downloads/completed
       - /path/to/your/storage/downloads/incomplete:/downloads/incomplete
       - /path/to/your/storage/downloads/torrents:/downloads/torrents
       - /path/to/your/storage/downloads/watch:/watch
-      
-      # Example Media sub-category bindings (Uncomment or adapt to add media types)
-      # - /path/to/your/storage/media/movies:/downloads/completed/movies
-      # - /path/to/your/storage/media/tv:/downloads/completed/tv
-      # - /path/to/your/storage/media/audiobooks:/downloads/completed/audiobooks
 
-# --- EXTERNAL NETWORK REQUIREMENT ---
-# Uses the pre-existing external network where your Traefik proxy is deployed.
 networks:
   private_secured_network:
     external: true
 
-# --- LOCAL NAMED VOLUMES ---
 volumes:
-  # Isolated named volume keeping Gluetun state information persistent between image updates
+  # Isolated named volume to prevent writing over your existing stack's state
   gluetun-proton-state:
