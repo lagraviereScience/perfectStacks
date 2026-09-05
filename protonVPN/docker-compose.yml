@@ -1,46 +1,46 @@
 services:
-  gluetun-proton:
+  gluetun-vpn:
     image: qmcgaw/gluetun:latest
-    container_name: gluetun-proton
+    container_name: gluetun-vpn
+
     cap_add:
       - NET_ADMIN
     restart: unless-stopped
     networks:
-      - private_secured_network
+      - PRIVATE_NETWORK
 
     environment:
       - TZ=Europe/Paris
       - VPN_SERVICE_PROVIDER=custom
       - VPN_TYPE=wireguard
-      
-      # Enable ProtonVPN Port Forwarding via NAT-PMP natively inside Gluetun
+
+      # Enable VPN port forwarding
       - VPN_PORT_FORWARDING=on
       - VPN_PORT_FORWARDING_PROVIDER=protonvpn
-      
-      # Local network access rule (adjust if your local subnet is different)
-      - FIREWALL_OUTBOUND_SUBNETS=192.168.1.0/24
+
+      # Local network access rule
+      - FIREWALL_OUTBOUND_SUBNETS=LOCAL_SUBNET
       - FIREWALL_INPUT_PORTS=9091
 
       # Gluetun internal control port
       - HTTP_CONTROL_SERVER=on
       - HTTP_CONTROL_SERVER_PORT=9999
 
-      # AUTOMATION HOOK: Works identically on localhost since network namespaces are shared
-      - VPN_PORT_FORWARDING_UP_COMMAND=/bin/sh -c "sleep 10 && apk add --no-cache transmission-remote && transmission-remote localhost:9091 -n YOUR_RPC_USERNAME:YOUR_RPC_PASSWORD -p {{PORTS}} && transmission-remote localhost:9091 -n YOUR_RPC_USERNAME:YOUR_RPC_PASSWORD -t all --reannounce"
+      # Port forwarding automation
+      - VPN_PORT_FORWARDING_UP_COMMAND=/bin/sh -c "sleep 10 && apk add --no-cache transmission-remote && transmission-remote localhost:9091 -n 'TRANSMISSION_USER:TRANSMISSION_PASSWORD' -p {{PORTS}} && transmission-remote localhost:9091 -n 'TRANSMISSION_USER:TRANSMISSION_PASSWORD' -t all --reannounce"
 
     volumes:
-      # Mount your ProtonVPN Wireguard config file directly to Gluetun
-      - /path/to/your/apps/vpnProton/wg0.conf:/gluetun/wireguard/wg0.conf:ro
-      - gluetun-proton-state:/gluetun
+      # ProtonVPN WireGuard configuration
+      - /PATH/TO/wg0.conf:/gluetun/wireguard/wg0.conf:ro
+      - gluetun-vpn-state:/gluetun
 
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=private_secured_network"
-      # Isolated Traefik Router & Service names to prevent collision with your other stack
-      - "traefik.http.routers.transmission-proton.rule=Host(`your.domain.com`)"
-      - "traefik.http.routers.transmission-proton.entrypoints=websecure"
-      - "traefik.http.routers.transmission-proton.tls.certresolver=myresolver"
-      - "traefik.http.services.transmission-proton.loadbalancer.server.port=9091"
+      - "traefik.docker.network=PRIVATE_NETWORK"
+      - "traefik.http.routers.transmission-vpn.rule=Host(`TRANSMISSION_DOMAIN`)"
+      - "traefik.http.routers.transmission-vpn.entrypoints=websecure"
+      - "traefik.http.routers.transmission-vpn.tls.certresolver=TRAEFIK_CERT_RESOLVER"
+      - "traefik.http.services.transmission-vpn.loadbalancer.server.port=9091"
 
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "9999"]
@@ -49,38 +49,50 @@ services:
       retries: 5
       start_period: 10s
 
-  transmission-proton:
+  transmission-vpn:
     image: lscr.io/linuxserver/transmission:latest
-    container_name: transmission-proton
+    container_name: transmission-vpn
+    cpuset: "2-3"
     restart: unless-stopped
 
-    # Route traffic through the newly renamed Gluetun service
-    network_mode: "service:gluetun-proton"
+    # Share Gluetun's network namespace
+    network_mode: "service:gluetun-vpn"
 
     depends_on:
-      gluetun-proton:
+      gluetun-vpn:
         condition: service_healthy
 
     environment:
       - PUID=1000
       - PGID=1000
       - TZ=Europe/Paris
-      - USER=YOUR_RPC_USERNAME
-      - PASS=YOUR_RPC_PASSWORD
+      - USER=TRANSMISSION_USER
+      - PASS=TRANSMISSION_PASSWORD
 
     volumes:
-      # Centralized application configs under your target directory
-      - /path/to/your/apps/vpnProton/transmission-config:/config
-      # Your persistent download directories
-      - /path/to/your/storage/downloads/completed:/downloads/completed
-      - /path/to/your/storage/downloads/incomplete:/downloads/incomplete
-      - /path/to/your/storage/downloads/torrents:/downloads/torrents
-      - /path/to/your/storage/downloads/watch:/watch
+      # Transmission configuration
+      - /PATH/TO/transmission-config:/config
+
+      # Download directories
+      - /PATH/TO/downloads/transmission/completed:/downloads/completed
+      - /PATH/TO/data/audio:/downloads/completed/audio
+      - /PATH/TO/data/audiobooks:/downloads/completed/audiobooks
+      - /PATH/TO/data/books:/downloads/completed/books
+      - /PATH/TO/data/games:/downloads/completed/games
+      - /PATH/TO/data/new:/downloads/completed/new
+      - /PATH/TO/data/old:/downloads/completed/old
+      - /PATH/TO/data/softs:/downloads/completed/softs
+      - /PATH/TO/data/private-category:/downloads/completed/private-category
+      - /PATH/TO/data/series:/downloads/completed/series
+      - /PATH/TO/data/reality:/downloads/completed/reality
+      - /PATH/TO/downloads/transmission/incomplete:/downloads/incomplete
+      - /PATH/TO/downloads/transmission/torrents:/downloads/torrents
+      - /PATH/TO/downloads/transmission/watch:/watch
 
 networks:
-  private_secured_network:
+  PRIVATE_NETWORK:
     external: true
 
 volumes:
-  # Isolated named volume to prevent writing over your existing stack's state
-  gluetun-proton-state:
+  # Persistent Gluetun state
+  gluetun-vpn-state:
